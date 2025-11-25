@@ -1,7 +1,10 @@
 CC=gcc
-CFLAGS=-O2 -Wall -pthread -march=native
+CFLAGS=-O3 -Wall -pthread -march=native
 
-all: call_rdrand crosstalk
+all: clean call_rdrand crosstalk
+
+clean:
+	rm -f call_rdrand crosstalk
 
 call_rdrand: call_rdrand.c
 	$(CC) $(CFLAGS) -o call_rdrand call_rdrand.c
