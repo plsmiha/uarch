@@ -10,7 +10,7 @@
 #include "asm.h"        
 
 #define NUM_SAMPLES 10000
-#define NUM_ITERATIONS 100
+#define NUM_ITERATIONS 27
 #define ROUNDS 10
 #define STRIDE 4096    
 #define POSSIBLE_BYTES 256
@@ -103,7 +103,7 @@ uint64_t get_reload_time(unsigned char *addr) {
 
 int main(void) {
 
-    CACHE_THRESHOLD = get_cache_threshold();
+    CACHE_THRESHOLD = get_cache_threshold()* 0.7;
 
     printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
 
