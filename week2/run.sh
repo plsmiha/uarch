@@ -27,4 +27,5 @@ else
     echo "DIFFERENT! "
 fi
 
-make clean
+make clean > /dev/null
+rm output.txt ground_truth.txt

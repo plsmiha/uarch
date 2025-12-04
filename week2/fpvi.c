@@ -165,7 +165,7 @@ int main(int argc, char *argv[]) {
 
         // extract the 4 bit architectural nibble with index nibble_index
         uint8_t architectural_nibble = (architectural_result >> (nibble_index * 4)) & 0xf;
-        uint8_t transient_nibble = architectural_nibble;
+        uint8_t transient_nibble = 0;
         
         
         //get the most hit that is not the architectural one 
