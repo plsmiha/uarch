@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-02 -Wall -mrdrnd -fno-strict-aliasing 
+CFLAGS=-O0 -Wall -mrdrnd -fno-strict-aliasing 
 
 all: fpvi
 
