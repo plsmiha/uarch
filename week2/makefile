@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O3 -Wall -mrdrnd -fno-strict-aliasing 
+CFLAGS=-02 -Wall -mrdrnd -fno-strict-aliasing 
 
 all: fpvi
 
@@ -10,4 +10,4 @@ clean:
 	rm -f fpvi
 
 run: fpvi
-	./fpvi
+	./fpvi 
