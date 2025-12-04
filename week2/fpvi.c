@@ -91,12 +91,12 @@ void reload_and_measure(unsigned char *reloadbuffer, size_t *cache_hits, uint64_
     }
 }
 
-double make_denormal() {
+uint64_t make_denormal() {
     uint64_t rand_val;
     asm volatile("rdrand %%rax" : "=a"(rand_val));
     rand_val &= 0x000FFFFFFFFFFFFFULL;
 
-    return *(double*)&rand_val;
+    return rand_val;
 }
 
 
@@ -110,32 +110,22 @@ int main(int argc, char *argv[]) {
     
     printf("CACHE THRESHOLD = %lu cycles\n\n", CACHE_THRESHOLD);
 
-    double dX = make_denormal();
-    double dY = make_denormal();
+ 
     
-    uint64_t x_hex = *(uint64_t*)&dX;
-    uint64_t y_hex = *(uint64_t*)&dY;
+    uint64_t dx = make_denormal();
+    uint64_t dy = make_denormal();
 
-    printf("dx = 0x%016lx\n", x_hex);
-    printf("dy = 0x%016lx\n", y_hex);
+    printf("dx = 0x%016lx\n", dx);
+    printf("dy = 0x%016lx\n", dy);
     
     // get architectural result for
-    double architectural_result;
-    asm volatile(
-        "movq %1, %%xmm0   \n\t"
-        "movq %2, %%xmm1   \n\t"
-        "divsd %%xmm1, %%xmm0 \n\t"
-        "movq %%xmm0, %0   \n\t"
-        : "=m"(architectural_result)
-        : "m"(x_hex), "m"(y_hex)
-        : "xmm0", "xmm1"
-    );
-    
-    uint64_t architectural_hex = *(uint64_t*)&architectural_result;
-    printf("architectural result = 0x%016lx\n\n", architectural_hex);
+    double result = (*(double*)&dx) / (*(double*)&dy);
+    uint64_t architectural_result = *(uint64_t*)&result;
+
+    printf("architectural result = 0x%016lx\n\n", architectural_result);
     
     // Recover transient result nibble by nibble
-    uint64_t transient_hex = 0;
+    uint64_t transient_result = 0;
     
     for (int nibble_index = 0; nibble_index < 16; nibble_index++) {
         size_t cache_hits[16] = {0};
@@ -158,12 +148,12 @@ int main(int argc, char *argv[]) {
                 "mov  %[shift], %%ecx       \n\t"
                 "shrq %%cl, %%rax           \n\t"
                 "and  $0xf, %%rax           \n\t"  // 4 bits for nibble
-                "shl  $11, %%rax            \n\t"  // STRIDE shift
+                "shl  $11, %%rax            \n\t"  // STRIDE shift to calculate cache offset
                 "add  %[buf], %%rax         \n\t"
-                "movb (%%rax), %%al         \n\t"
+                "movb (%%rax), %%al         \n\t"  //access to bring into cache
                 :
-                : [x]"m"(x_hex),
-                  [y]"m"(y_hex),
+                : [x]"m"(dx),
+                  [y]"m"(dy),
                   [buf]"r"(reloadbuffer),
                   [shift]"r"(nibble_index * 4)
                 : "rax","rcx","xmm0","xmm1","memory"
@@ -174,7 +164,7 @@ int main(int argc, char *argv[]) {
         }
 
         // extract the 4 bit architectural nibble with index nibble_index
-        uint8_t architectural_nibble = (architectural_hex >> (nibble_index * 4)) & 0xf;
+        uint8_t architectural_nibble = (architectural_result >> (nibble_index * 4)) & 0xf;
         uint8_t transient_nibble = architectural_nibble;
         
         
@@ -187,12 +177,12 @@ int main(int argc, char *argv[]) {
         }
         
         //to reconstruct the transient result
-        transient_hex |= ((uint64_t)transient_nibble) << (nibble_index * 4);
+        transient_result |= ((uint64_t)transient_nibble) << (nibble_index * 4);
         
         printf("Nibble %d:    0x%x (hits=%zu)\n", nibble_index, transient_nibble, cache_hits[transient_nibble]);
     }
     
-    printf("\nTRANSIENT LEAKED RESULT: 0x%016lx\n", transient_hex);
+    printf("\nTRANSIENT LEAKED RESULT: 0x%016lx\n", transient_result);
 
     munmap(reloadbuffer, RELOADBUFFER_SIZE);
     return 0;

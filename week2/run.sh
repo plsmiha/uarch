@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Simple FPVI test script
+make 
 
-echo "Running FPVI attack..."
 ./fpvi > output.txt
+cat output.txt
 
 # Extract operands
 DX=$(grep "dx = " output.txt | cut -d' ' -f3)
@@ -26,3 +26,5 @@ if [ "$YOUR_RESULT" = "$GROUND_TRUTH" ]; then
 else
     echo "DIFFERENT! "
 fi
+
+make clean
