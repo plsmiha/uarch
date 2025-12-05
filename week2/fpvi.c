@@ -14,9 +14,9 @@
 
 #include "asm.h"
 
-#define NUM_SAMPLES 10000
+#define NUM_SAMPLES 1000
 #define STRIDE 4096
-#define ITERATIONS 1000
+#define ITERATIONS 20
 #define ROUNDS 10
 
 uint64_t measure_access(unsigned char* addr, int is_miss) {
@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
 
             // 2. FPVI 
             asm volatile(
-                ".rept 10                    \n\t" 
+                ".rept 2                   \n\t" 
                 "  movq  %[x], %%xmm0       \n\t"  
                 "  movq  %[y], %%xmm1       \n\t"  
                 "  divsd %%xmm1, %%xmm0     \n\t"
