@@ -215,7 +215,7 @@ int main(void) {
             ++leaked_values_count;
         }
 
-        printf("Leaked %zu bytes: ", leaked_values_count * BYTES_TO_LEAK);
+        printf("Leaked %zu values\n", leaked_values_count);
         for (size_t i = 0; i < leaked_values_count; i++) {
             printf("0x%02x%02x%02x%02x%02x%02x%02x%02x\n", leaked_values[i * BYTES_TO_LEAK], leaked_values[i * BYTES_TO_LEAK + 1], leaked_values[i * BYTES_TO_LEAK + 2], leaked_values[i * BYTES_TO_LEAK + 3], leaked_values[i * BYTES_TO_LEAK + 4], leaked_values[i * BYTES_TO_LEAK + 5], leaked_values[i * BYTES_TO_LEAK + 6], leaked_values[i * BYTES_TO_LEAK + 7]);
         }
