@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Cleanup function
+cleanup() {
+    echo ""
+    echo "killing processes..."
+    kill -9 $CROSSTALK_PID 2>/dev/null
+    pkill -9 crosstalk 2>/dev/null
+    wait 2>/dev/null
+    make clean
+    exit 0
+}
+
+# Trap Ctrl+C
+trap cleanup SIGINT SIGTERM
+
+killall crosstalk 2>/dev/null
+
+sleep 1
+
+make
+taskset -c 1,5 ./crosstalk &
+CROSSTALK_PID=$!
+sleep 1.0
+taskset -c 3 /tmp/set_root_password
+
+echo "Press Ctrl+C to stop"
+
+# Wait forever (until Ctrl+C)
+wait
+
