@@ -1,10 +1,10 @@
 CC=gcc
 CFLAGS=-O3 -Wall -pthread -march=native
 
-all: clean crosstalk
+all: clean attack
 
 clean:
-	rm -f crosstalk
+	rm -f attack
 
-crosstalk: crosstalk.c asm.h
-	$(CC) $(CFLAGS) -o crosstalk crosstalk.c
+attack: attack.c asm.h
+	$(CC) $(CFLAGS) -o attack attack.c
