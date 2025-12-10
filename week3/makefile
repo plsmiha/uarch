@@ -9,5 +9,5 @@ clean:
 attack: attack.c asm.h
 	$(CC) $(CFLAGS) -o attack attack.c
 
-hash: ridl_shadow.c asm.h
-	$(CC) $(CFLAGS) -o hash ridl_shadow.c
+hash: hash.c asm.h
+	$(CC) $(CFLAGS) -o hash hash.c
