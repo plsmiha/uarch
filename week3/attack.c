@@ -303,13 +303,14 @@ int main(void) {
         fpvi_results[i / 2] = transient_result;
     }
 
-    char *b = malloc(3 * sizeof(uint64_t));
-    for (size_t i = 0; i < 3; ++i) {
-        printf("FPVI transient result %zu: 0x%016lx\n", i, fpvi_results[i]);
-        strncpy(b + i * sizeof(uint64_t), (char*)&fpvi_results[i], sizeof(uint64_t));
+    for (int i = 0; i < 3; i++) {
+        printf("FPVI transient result %d: 0x%016lx | %lu\n", i, fpvi_results[i], fpvi_results[i]);
     }
 
-    printf("Prefix: %s\n", b);
+    char prefix[100];
+    snprintf(prefix, sizeof(prefix), "%lu%lu%lu", fpvi_results[0], fpvi_results[1], fpvi_results[2]);
+
+    printf("Prefix: %s\n", prefix);
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
