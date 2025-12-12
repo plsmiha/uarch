@@ -23,8 +23,12 @@ cat leak_output.txt
 HASH=$(grep "Hash: " leak_output.txt | cut -d':' -f3)
 
 echo
+echo "Prefix found: ${PREFIX}"
+echo "Hash found: ${HASH}"
+
+echo
 echo "Run the following command to crack the hash:"
-echo "hashcat -a 3 '${HASH}' '${PREFIX}?h?h?h?h?h?h' --increment-min ${#PREFIX} --increment -w 4"
+echo "hashcat -m 500 -a 3 -1 '?l?d' '${HASH}' '${PREFIX}?1?1?1?1?1'"
 
 make clean > /dev/null
 rm prefix_output.txt leak_output.txt

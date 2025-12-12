@@ -11,3 +11,6 @@ attack: attack.c asm.h
 
 leak_hash: leak_hash.c
 	gcc leak_hash.c -Os -Wall -o leak_hash -mrtm
+
+call_rdrand: call_rdrand.c
+	$(CC) $(CFLAGS) -o call_rdrand call_rdrand.c

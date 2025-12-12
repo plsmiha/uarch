@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
 
     }
 
-    printf("%s\n", leaked_secret);
+    printf("Hash: %s\n", leaked_secret);
 
     munmap(reloadbuffer, RELOADBUFFER_SIZE);
     munmap(leakbuffer, PAGE_SIZE);
