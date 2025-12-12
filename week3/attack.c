@@ -268,7 +268,7 @@ int main(void) {
     if (pid == 0) {
 
         while(1) {
-            cpuid();  //not sure if it's the corerct assembly from asm.h it was there from asg 1, might need changes not sure yet
+            cpuid();  
         }
         _exit(0);
     }
