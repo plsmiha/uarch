@@ -57,8 +57,6 @@ uint64_t measure_access(unsigned char* addr, int is_miss) {
     return min_time;
 }
 
-
-
 uint64_t get_cache_threshold(){
 
     uint64_t hits = 0;
