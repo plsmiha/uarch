@@ -10,7 +10,7 @@ make call_rdrand
 echo
 echo "Running prefix attack..."
 
-taskset -c 1,5 ./attack & (sleep 2 && taskset -c 3 ./call_rdrand)
+taskset -c 1,5 ./attack & (sleep 1 && taskset -c 3 ./call_rdrand)
 
 make clean > /dev/null
 
