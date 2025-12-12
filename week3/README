@@ -6,3 +6,5 @@ Run the following command to crack the hash:
 hashcat -m 500 -a 3 -1 '?l?d' ....
 
 The fixed string is u4rch, which can be seen in the provided hashcat_results.png
+
+*In extremely rare cases, it might get stuck leaking the hash or leak the wrong RAND numbers. Please run it another time if that happens. These cases, however, seem to be very rare.
