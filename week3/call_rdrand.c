@@ -6,7 +6,7 @@ int main() {
 
     printf("call_rdrand running\n");
 
-    const int sleep_useconds = 10000; // default 100 ms, as suggested in manual
+    const int sleep_useconds = 5000; // default 100 ms, as suggested in manual
 
     for (int i = 0; i < 4; i++) {
         uint64_t rand_val;
