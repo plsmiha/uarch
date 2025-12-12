@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -87,19 +88,6 @@ uint64_t get_cache_threshold(){
     uint64_t threshold = (miss_avg + hitt_avg) / 2;
 
     return threshold;
-}
-
-uint64_t get_reload_time(unsigned char *addr) {
-
-    mfence();
-    uint64_t start = rdtscp();
-    *(volatile char*)addr;
-    lfence();
-    uint64_t end = rdtscp();
-
-    uint64_t delta_t = end - start;
-
-    return delta_t;
 }
 
 void reload_and_measure(unsigned char *reloadbuffer, size_t stride, size_t *cache_hits, size_t cache_size, uint64_t threshold) {
