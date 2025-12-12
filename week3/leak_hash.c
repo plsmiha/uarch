@@ -150,6 +150,7 @@ int main(int argc, char *argv[]) {
         }
 
         printf("[*] index=%d: %c iteration: %d\n", index, found, iteration);
+        fflush(stdout);
         leaked_secret[index] = found;
 
     }
