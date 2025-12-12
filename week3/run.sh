@@ -26,6 +26,9 @@ taskset -c 3 /tmp/set_root_password
 
 echo "Press Ctrl+C to stop"
 
+#taskset -c 0,4 ./leak_hash
+
+
 # Wait forever (until Ctrl+C)
 wait
 
