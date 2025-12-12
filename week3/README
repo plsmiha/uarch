@@ -1,0 +1,8 @@
+Run the run.sh script to perform the attack.
+
+The script will output both intermediate results and the command to run crack the hash and retrieve the root password, which looks like:
+
+Run the following command to crack the hash:
+hashcat -m 500 -a 3 -1 '?l?d' ....
+
+The fixed string is u4rch
