@@ -5,4 +5,4 @@ The script will output both intermediate results and the command to run crack th
 Run the following command to crack the hash:
 hashcat -m 500 -a 3 -1 '?l?d' ....
 
-The fixed string is u4rch
+The fixed string is u4rch, which can be seen in the provided hashcat_results.png
